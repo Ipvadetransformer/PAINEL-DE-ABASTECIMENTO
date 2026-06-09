@@ -1,0 +1,461 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc, updateDoc } from 'firebase/firestore';
+import { Trash2, Edit2, Plus, Fuel, Truck, Activity, Cloud, CloudOff, AlertCircle, Save, Filter } from 'lucide-react';
+
+// ==========================================
+// 1. Configuração do Firebase (Nuvem)
+// ==========================================
+const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'frota-control-app';
+const COLLECTION_NAME = 'abastecimentos';
+
+// ==========================================
+// LISTA DE PLACAS DA PLANILHA "PLACAS - FROTA (1).xlsx"
+// Substitua ou adicione suas placas aqui dentro destas aspas:
+// ==========================================
+const PLACAS_CADASTRADAS = [
+  'QCV1J51', 'QCV1J61', 'QCV1J71', 'QCV1J81', 'QCV1J91', 'QCV2A11', 'QCV2A21', 
+  'QCV2A31', 'QCV2A41', 'QCW7F41', 'QCW7F91', 'QCW7G11', 'QCW7G51', 'QCW7H11', 
+  'QCW7H31', 'QCW7H91', 'QCW7I51', 'QCW7J21', 'QCW7J71', 'RAN9J73', 'RAO6G83', 
+  'RAO6H23', 'RAO8I73', 'RAO8J93', 'RAR5B66', 'RAS5H93', 'RAS5I23', 'RAS5I83', 
+  'RAS5I93', 'RAS5J03', 'RAS9E37', 'RAT0A86', 'RAT0B36', 'RAT0B66', 'RAT0B96', 
+  'RAU0G27', 'RAU2J21', 'RAU7A87', 'RAU7B07', 'RAU7B27', 'RAZ5I54', 'RAZ5J14', 
+  'RAZ5J34', 'RRJ3E55', 'RRJ3F25', 'RRJ3F85', 'RRJ3G35', 'RRJ3G55', 'RRJ3G75', 
+  'RRJ3H05', 'RRJ6J65', 'RRJ7A15', 'RRJ7A55', 'RRJ7A85', 'RRO5B02', 'RRO5B12', 
+  'RRO5B22', 'RRO7B02', 'RRO7B22', 'RRO7B52', 'RRO7B62', 'RRP7D22', 'RRP7D52', 
+  'RRS4I98', 'RRS6C71', 'RRV2J52', 'RRV2J82', 'RRV2J92', 'RRV3A32', 'RRV3A62', 
+  'RRV3B06', 'RRV3B12', 'RRV3B16', 'RRV3B26', 'RRV3B32', 'RRV3B36', 'RRV3B46', 
+  'RRV3B52', 'RRV3B56', 'RRV3B66', 'RRV3B72', 'RRV3B76', 'RRV3B82', 'RRV3B86', 
+  'RRV3C06', 'RRV3C16', 'RRX3A91', 'RRX3B51', 'RRX3B61', 'RRX3C21', 'RRX3C41', 
+  'RRX3C81', 'RRX6H07', 'RRX6H37', 'RRX6H87', 'RRX6H97', 'RRX6I17', 'RRX6I27', 
+  'RRX6I37', 'RRX8A17', 'SPE2D46', 'SPE2D66', 'SPE2D76', 'SPE2D86', 'SPE2D96', 
+  'SPE2E16', 'SPE2E36', 'SPE4G86', 'SPE4G96', 'SPE4H06', 'SPE4H16', 'SPE4H26', 
+  'SPE5F79', 'SPE5F99', 'SPG2G39', 'SPG2G49', 'SPG2G59', 'SPG2G69', 'SPG2G79', 
+  'SPG2H76', 'SPH1A89', 'SPH1A99', 'SPH1J18', 'SPH4G48'
+];
+
+export default function App() {
+  // ==========================================
+  // 2. Estados do Sistema
+  // ==========================================
+  const [user, setUser] = useState(null);
+  const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState('');
+  
+  // Estado do formulário
+  const [formData, setFormData] = useState({
+    placa: '',
+    hodometroAnterior: '',
+    hodometroAtual: '',
+    litros: '',
+    precoLitro: '',
+    tanqueCheio: 'SIM'
+  });
+  const [editingId, setEditingId] = useState(null);
+  
+  // Novo Estado: Filtro de Placa para o Dashboard
+  const [filtroPlaca, setFiltroPlaca] = useState('TODAS');
+
+  // ==========================================
+  // 3. Autenticação e Conexão (Regra 3 do Firebase)
+  // ==========================================
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Erro na autenticação:", error);
+      }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // ==========================================
+  // 4. Busca de Dados em Tempo Real (Regra 1 e 2 do Firebase)
+  // ==========================================
+  useEffect(() => {
+    if (!user) return; // Aguarda a autenticação
+    
+    // Caminho estrito para dados públicos compartilhados
+    const recordsRef = collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME);
+    
+    const unsubscribe = onSnapshot(recordsRef, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // Ordenação feita na memória (Regra 2)
+      data.sort((a, b) => b.timestamp - a.timestamp);
+      setRecords(data);
+      setLoading(false);
+    }, (error) => {
+      console.error("Erro ao buscar dados:", error);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // ==========================================
+  // 5. Cálculos e Lógica de Negócio
+  // ==========================================
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({ ...prev, [name]: value.toUpperCase() }));
+    setErrorMsg('');
+  };
+
+  const calcularIndicadores = (data) => {
+    const hAnt = parseFloat(data.hodometroAnterior);
+    const hAtu = parseFloat(data.hodometroAtual);
+    const lit = parseFloat(data.litros);
+    const preco = parseFloat(data.precoLitro);
+
+    const distancia = hAtu - hAnt;
+    const media = distancia / lit;
+    const custoTotal = lit * preco;
+    const custoKm = custoTotal / distancia;
+
+    return { distancia, media, custoTotal, custoKm };
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setErrorMsg('');
+
+    // Validações básicas
+    if (!formData.placa || !formData.hodometroAnterior || !formData.hodometroAtual || !formData.litros || !formData.precoLitro) {
+      setErrorMsg('Por favor, preencha todos os campos.');
+      return;
+    }
+
+    if (parseFloat(formData.hodometroAtual) <= parseFloat(formData.hodometroAnterior)) {
+      setErrorMsg('O hodômetro atual deve ser maior que o anterior.');
+      return;
+    }
+
+    try {
+      const indicadores = calcularIndicadores(formData);
+      const recordData = {
+        ...formData,
+        ...indicadores,
+        timestamp: editingId ? records.find(r => r.id === editingId).timestamp : Date.now(),
+        dataRegistro: new Date().toLocaleDateString('pt-BR')
+      };
+
+      const recordsRef = collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME);
+
+      if (editingId) {
+        // Atualizar registro existente
+        const docRef = doc(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME, editingId);
+        await updateDoc(docRef, recordData);
+        setEditingId(null);
+      } else {
+        // Criar novo registro
+        await addDoc(recordsRef, recordData);
+      }
+
+      // Limpar formulário
+      setFormData({ placa: '', hodometroAnterior: '', hodometroAtual: '', litros: '', precoLitro: '', tanqueCheio: 'SIM' });
+    } catch (error) {
+      console.error("Erro ao salvar:", error);
+      setErrorMsg('Erro ao salvar os dados. Tente novamente.');
+    }
+  };
+
+  const handleEdit = (record) => {
+    setFormData({
+      placa: record.placa,
+      hodometroAnterior: record.hodometroAnterior,
+      hodometroAtual: record.hodometroAtual,
+      litros: record.litros,
+      precoLitro: record.precoLitro,
+      tanqueCheio: record.tanqueCheio || 'SIM'
+    });
+    setEditingId(record.id);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleDelete = async (id) => {
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME, id);
+      await deleteDoc(docRef);
+    } catch (error) {
+      console.error("Erro ao excluir:", error);
+      setErrorMsg('Erro ao excluir o registro.');
+    }
+  };
+
+  // Extrai placas únicas do histórico e junta com a lista cadastrada
+  const placasDisponiveis = useMemo(() => {
+    const placasHistorico = records.map(r => r.placa);
+    const todasPlacas = new Set([...PLACAS_CADASTRADAS, ...placasHistorico]);
+    return Array.from(todasPlacas).sort();
+  }, [records]);
+
+  // Filtra os registros com base na placa selecionada
+  const recordsFiltrados = useMemo(() => {
+    if (filtroPlaca === 'TODAS') return records;
+    return records.filter(r => r.placa === filtroPlaca);
+  }, [records, filtroPlaca]);
+
+  // Resumo do Dashboard (Calculado em memória com base no FILTRO atual)
+  const dashboardStats = useMemo(() => {
+    if (recordsFiltrados.length === 0) return { totalDistancia: 0, mediaGeral: 0, custoTotal: 0 };
+    
+    const totals = recordsFiltrados.reduce((acc, curr) => ({
+      distancia: acc.distancia + curr.distancia,
+      litros: acc.litros + parseFloat(curr.litros),
+      custo: acc.custo + curr.custoTotal
+    }), { distancia: 0, litros: 0, custo: 0 });
+
+    return {
+      totalDistancia: totals.distancia,
+      mediaGeral: totals.distancia / totals.litros,
+      custoTotal: totals.custo
+    };
+  }, [recordsFiltrados]);
+
+  // ==========================================
+  // 6. Interface de Usuário (UI)
+  // ==========================================
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans p-4 md:p-8">
+      <div className="max-w-6xl mx-auto space-y-6">
+        
+        {/* Cabeçalho */}
+        <header className="flex flex-col md:flex-row justify-between items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+          <div className="flex items-center gap-3">
+            <div className="bg-indigo-600 p-3 rounded-xl text-white">
+              <Truck size={28} />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold text-slate-900">FrotaControl</h1>
+              <p className="text-sm text-slate-500">Gestão de Combustível em Nuvem</p>
+            </div>
+          </div>
+          
+          <div className="mt-4 md:mt-0 flex items-center gap-2 px-4 py-2 bg-slate-50 rounded-full border border-slate-200">
+            {user ? (
+              <><Cloud size={18} className="text-emerald-500" /> <span className="text-sm font-medium text-emerald-700">Online & Sincronizado</span></>
+            ) : (
+              <><CloudOff size={18} className="text-amber-500" /> <span className="text-sm font-medium text-amber-700">Conectando...</span></>
+            )}
+          </div>
+        </header>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          
+          {/* Coluna Esquerda: Formulário */}
+          <div className="lg:col-span-1 space-y-6">
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
+                {editingId ? <Edit2 size={20} className="text-indigo-600"/> : <Plus size={20} className="text-indigo-600"/>}
+                {editingId ? 'Editar Abastecimento' : 'Novo Abastecimento'}
+              </h2>
+              
+              {errorMsg && (
+                <div className="mb-4 p-3 bg-red-50 text-red-700 rounded-lg flex items-start gap-2 text-sm">
+                  <AlertCircle size={18} className="shrink-0 mt-0.5" />
+                  <p>{errorMsg}</p>
+                </div>
+              )}
+
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-600 mb-1">Placa da Carreta</label>
+                  <select 
+                    name="placa" 
+                    value={formData.placa} 
+                    onChange={handleInputChange} 
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none uppercase font-medium text-slate-700"
+                  >
+                    <option value="">SELECIONE UMA PLACA...</option>
+                    {placasDisponiveis.map(placa => (
+                      <option key={placa} value={placa}>{placa}</option>
+                    ))}
+                  </select>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-600 mb-1">Km Anterior</label>
+                    <input type="number" name="hodometroAnterior" value={formData.hodometroAnterior} onChange={handleInputChange} placeholder="Ex: 50000" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-600 mb-1">Km Atual</label>
+                    <input type="number" name="hodometroAtual" value={formData.hodometroAtual} onChange={handleInputChange} placeholder="Ex: 50800" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-600 mb-1">Litros (L)</label>
+                    <input type="number" step="0.01" name="litros" value={formData.litros} onChange={handleInputChange} placeholder="Ex: 200" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-600 mb-1">Preço (R$/L)</label>
+                    <input type="number" step="0.01" name="precoLitro" value={formData.precoLitro} onChange={handleInputChange} placeholder="Ex: 5.90" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-600 mb-1">Tanque Cheio?</label>
+                    <select name="tanqueCheio" value={formData.tanqueCheio} onChange={handleInputChange} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none font-medium text-slate-700">
+                      <option value="SIM">SIM</option>
+                      <option value="NAO">NÃO (Incompleto)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <button type="submit" className="w-full mt-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-4 rounded-xl transition-colors flex items-center justify-center gap-2">
+                  <Save size={20} />
+                  {editingId ? 'Atualizar Dados' : 'Salvar Abastecimento'}
+                </button>
+                
+                {editingId && (
+                  <button type="button" onClick={() => { setEditingId(null); setFormData({ placa: '', hodometroAnterior: '', hodometroAtual: '', litros: '', precoLitro: '', tanqueCheio: 'SIM' }); }} className="w-full mt-2 bg-white text-slate-600 border border-slate-200 font-semibold py-3 px-4 rounded-xl hover:bg-slate-50 transition-colors">
+                    Cancelar Edição
+                  </button>
+                )}
+              </form>
+            </div>
+          </div>
+
+          {/* Coluna Direita: Dashboard e Histórico */}
+          <div className="lg:col-span-2 space-y-6">
+            
+            {/* Header do Dashboard com Filtro */}
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+              <div>
+                <h2 className="text-lg font-bold text-slate-800">Visão Gerencial</h2>
+                <p className="text-sm text-slate-500">
+                  {filtroPlaca === 'TODAS' ? 'Analisando toda a frota' : `Analisando a carreta ${filtroPlaca}`}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <Filter size={20} className="text-slate-400" />
+                <select 
+                  value={filtroPlaca} 
+                  onChange={(e) => setFiltroPlaca(e.target.value)}
+                  className="w-full sm:w-auto p-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-slate-700"
+                >
+                  <option value="TODAS">Todas as Placas (Frota)</option>
+                  {placasDisponiveis.map(placa => (
+                    <option key={placa} value={placa}>{placa}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Cards de Resumo */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-4">
+                <div className="bg-blue-50 p-3 rounded-full text-blue-600"><Activity size={24} /></div>
+                <div>
+                  <p className="text-sm text-slate-500 font-medium">Média Geral da Frota</p>
+                  <p className="text-2xl font-bold text-slate-800">{dashboardStats.mediaGeral ? dashboardStats.mediaGeral.toFixed(2) : '0.00'} <span className="text-base font-normal text-slate-500">km/L</span></p>
+                </div>
+              </div>
+              <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-4">
+                <div className="bg-emerald-50 p-3 rounded-full text-emerald-600"><Truck size={24} /></div>
+                <div>
+                  <p className="text-sm text-slate-500 font-medium">Total Rodado</p>
+                  <p className="text-2xl font-bold text-slate-800">{dashboardStats.totalDistancia.toLocaleString('pt-BR')} <span className="text-base font-normal text-slate-500">km</span></p>
+                </div>
+              </div>
+              <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-4">
+                <div className="bg-rose-50 p-3 rounded-full text-rose-600"><Fuel size={24} /></div>
+                <div>
+                  <p className="text-sm text-slate-500 font-medium">Custo Total</p>
+                  <p className="text-2xl font-bold text-slate-800">R$ {dashboardStats.custoTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Lista de Registros */}
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+              <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+                <h2 className="text-lg font-bold text-slate-800">Histórico de Abastecimentos</h2>
+                <span className="bg-slate-100 text-slate-600 py-1 px-3 rounded-full text-sm font-medium">{recordsFiltrados.length} registros</span>
+              </div>
+              
+              <div className="overflow-x-auto">
+                {loading ? (
+                  <div className="p-8 text-center text-slate-500">Carregando dados da nuvem...</div>
+                ) : recordsFiltrados.length === 0 ? (
+                  <div className="p-12 text-center flex flex-col items-center justify-center">
+                    <Fuel size={48} className="text-slate-200 mb-4" />
+                    <p className="text-slate-500 font-medium text-lg">Nenhum abastecimento encontrado.</p>
+                    <p className="text-slate-400 text-sm mt-1">Nenhum dado para exibir neste filtro.</p>
+                  </div>
+                ) : (
+                  <table className="w-full text-left border-collapse min-w-[700px]">
+                    <thead>
+                      <tr className="bg-slate-50 text-slate-500 text-sm border-b border-slate-200">
+                        <th className="p-4 font-medium">Data / Placa</th>
+                        <th className="p-4 font-medium">Distância</th>
+                        <th className="p-4 font-medium">Litros / Preço</th>
+                        <th className="p-4 font-medium">Desempenho</th>
+                        <th className="p-4 font-medium text-right">Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {recordsFiltrados.map((record) => (
+                        <tr key={record.id} className="hover:bg-slate-50 transition-colors">
+                          <td className="p-4">
+                            <div className="font-bold text-slate-800 uppercase">{record.placa}</div>
+                            <div className="text-xs text-slate-500">{record.dataRegistro}</div>
+                          </td>
+                          <td className="p-4">
+                            <div className="text-sm font-medium text-slate-700">{record.distancia} km</div>
+                            <div className="text-xs text-slate-400">{record.hodometroAnterior} → {record.hodometroAtual}</div>
+                          </td>
+                          <td className="p-4">
+                            <div className="text-sm font-medium text-slate-700">{record.litros} L</div>
+                            <div className="text-xs text-slate-400">R$ {Number(record.precoLitro).toFixed(2)} /L</div>
+                            <div className={`mt-1 text-[10px] font-bold px-2 py-0.5 inline-block rounded ${record.tanqueCheio === 'NAO' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                              {record.tanqueCheio === 'NAO' ? 'Incompleto' : 'Tanque Cheio'}
+                            </div>
+                          </td>
+                          <td className="p-4">
+                            <div className="inline-block px-2 py-1 bg-indigo-50 text-indigo-700 rounded text-sm font-bold">
+                              {record.media.toFixed(2)} km/L
+                            </div>
+                            <div className="text-xs text-slate-500 mt-1">R$ {record.custoKm.toFixed(2)} /km</div>
+                          </td>
+                          <td className="p-4 text-right">
+                            <div className="flex items-center justify-end gap-2">
+                              <button onClick={() => handleEdit(record)} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors" title="Editar">
+                                <Edit2 size={18} />
+                              </button>
+                              <button onClick={() => handleDelete(record.id)} className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors" title="Excluir">
+                                <Trash2 size={18} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
