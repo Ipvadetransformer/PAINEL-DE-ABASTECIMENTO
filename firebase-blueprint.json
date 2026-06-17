@@ -1,0 +1,49 @@
+{
+  "entities": {
+    "FuelRecord": {
+      "title": "FuelRecord",
+      "description": "A record of vehicle fuel filling event.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "data": { "type": "string", "format": "date" },
+        "timestamp": { "type": "number" },
+        "placa": { "type": "string" },
+        "localAbastecimento": { "type": "string" },
+        "kmAnterior": { "type": "number" },
+        "hodometroAtual": { "type": "number" },
+        "litros": { "type": "number" },
+        "precoLitro": { "type": "number" },
+        "tanqueCheio": { "type": "string", "enum": ["SIM", "NAO"] },
+        "considerarLitragem": { "type": "string", "enum": ["SIM", "NAO"] },
+        "distancia": { "type": "number" },
+        "media": { "type": "number" },
+        "custoTotal": { "type": "number" },
+        "custoKm": { "type": "number" }
+      },
+      "required": [
+        "id",
+        "data",
+        "timestamp",
+        "placa",
+        "localAbastecimento",
+        "kmAnterior",
+        "hodometroAtual",
+        "litros",
+        "precoLitro",
+        "tanqueCheio",
+        "considerarLitragem",
+        "distancia",
+        "media",
+        "custoTotal",
+        "custoKm"
+      ]
+    }
+  },
+  "firestore": {
+    "/fuelRecords/{recordId}": {
+      "schema": "FuelRecord",
+      "description": "Collection of all fuel filling records"
+    }
+  }
+}

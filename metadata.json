@@ -1,0 +1,6 @@
+{
+  "name": "FrotaControl",
+  "description": "Gestão de abastecimento e consumo de combustível da frota com persistência em nuvem.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
